@@ -1,0 +1,435 @@
+# ===== NETLIFY CONFIGURATION =====
+# netlify.toml - Netlify configuration
+[build]
+  functions = "netlify/functions"
+  publish = "public"
+
+[build.environment]
+  NODE_VERSION = "18"
+
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/:splat"
+  status = 200
+
+[functions]
+  node_bundler = "esbuild"
+
+# Environment variables (set in Netlify dashboard):
+# BLOCKFROST_PROJECT_ID = your_blockfrost_api_key
+# WEBHOOK_SECRET = your_webhook_secret
+# BOT_API_URL = https://bot.swgyub.com
+
+---
+
+# ===== PACKAGE.JSON FILES =====
+# package.json - For Discord bot (VPS/Railway)
+{
+  "name": "cardano-dice-bot",
+  "version": "1.0.0",
+  "description": "Cardano Discord Dice Bot for swgyub.com",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js",
+    "dev": "nodemon bot.js",
+    "install-deps": "npm install"
+  },
+  "dependencies": {
+    "discord.js": "^14.14.1",
+    "axios": "^1.6.2",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
+
+---
+
+# package.json - For Netlify functions
+{
+  "name": "netlify-functions",
+  "version": "1.0.0",
+  "description": "Netlify functions for Cardano bot",
+  "dependencies": {
+    "axios": "^1.6.2"
+  }
+}
+
+---
+
+# ===== ENVIRONMENT VARIABLES =====
+# .env - For Discord bot (keep this secure!)
+DISCORD_TOKEN=your_discord_bot_token_here
+API_BASE_URL=https://api.swgyub.com/.netlify/functions
+ENVIRONMENT=production
+BOT_API_PORT=3001
+
+# Netlify Environment Variables (set in dashboard):
+# BLOCKFROST_PROJECT_ID=your_blockfrost_api_key
+# WEBHOOK_SECRET=your_random_webhook_secret
+# BOT_API_URL=https://bot.swgyub.com
+
+---
+
+# ===== DOMAIN SETUP =====
+# DNS Configuration for swgyub.com
+
+# A Records:
+# @ (root domain)    -> Your main website IP
+# api               -> Netlify IP (or CNAME to your-site.netlify.app)
+# bot               -> Your VPS/Railway IP where Discord bot runs
+# dashboard         -> Netlify IP (for web dashboard)
+
+# CNAME Records (alternative):
+# api.swgyub.com    -> your-site.netlify.app
+# dashboard.swgyub.com -> your-site.netlify.app
+
+---
+
+# ===== NGINX CONFIGURATION =====
+# /etc/nginx/sites-available/swgyub.com - For VPS
+server {
+    listen 80;
+    server_name bot.swgyub.com;
+    return 301 https://$server_name$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name bot.swgyub.com;
+
+    # SSL Configuration (use Certbot for free SSL)
+    ssl_certificate /etc/letsencrypt/live/bot.swgyub.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/bot.swgyub.com/privkey.pem;
+
+    location / {
+        proxy_pass http://localhost:3001;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_cache_bypass $http_upgrade;
+    }
+
+    location /health {
+        access_log off;
+        return 200 "healthy\n";
+        add_header Content-Type text/plain;
+    }
+}
+
+---
+
+# ===== PM2 CONFIGURATION =====
+# ecosystem.config.js - PM2 process manager
+module.exports = {
+  apps: [{
+    name: 'cardano-dice-bot',
+    script: 'bot.js',
+    instances: 1,
+    autorestart: true,
+    watch: false,
+    max_memory_restart: '1G',
+    env: {
+      NODE_ENV: 'production',
+      PORT: 3001
+    },
+    error_file: './logs/err.log',
+    out_file: './logs/out.log',
+    log_file: './logs/combined.log',
+    time: true
+  }]
+};
+
+---
+
+# ===== DOCKER CONFIGURATION =====
+# Dockerfile - If using Docker deployment
+FROM node:18-alpine
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm ci --only=production
+
+COPY . .
+
+EXPOSE 3001
+
+USER node
+
+CMD ["npm", "start"]
+
+---
+
+# docker-compose.yml - For local development
+version: '3.8'
+
+services:
+  bot:
+    build: .
+    ports:
+      - "3001:3001"
+    environment:
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
+      - API_BASE_URL=${API_BASE_URL}
+    volumes:
+      - ./logs:/app/logs
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_DB=cardano_bot
+      - POSTGRES_USER=bot_user
+      - POSTGRES_PASSWORD=secure_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+volumes:
+  postgres_data:
+
+---
+
+# ===== RAILWAY CONFIGURATION =====
+# railway.toml - If using Railway for bot hosting
+[build]
+  builder = "NIXPACKS"
+
+[deploy]
+  startCommand = "npm start"
+  restartPolicyType = "ON_FAILURE"
+  restartPolicyMaxRetries = 10
+
+---
+
+# ===== DEPLOYMENT SCRIPTS =====
+# deploy.sh - Deployment script for VPS
+#!/bin/bash
+set -e
+
+echo "🚀 Deploying Cardano Dice Bot to swgyub.com..."
+
+# Pull latest code
+git pull origin main
+
+# Install dependencies
+npm install --production
+
+# Restart bot with PM2
+pm2 restart cardano-dice-bot
+
+# Check status
+pm2 status
+
+echo "✅ Deployment complete!"
+echo "🌐 Bot running at: https://bot.swgyub.com"
+echo "📊 API endpoints at: https://api.swgyub.com"
+
+---
+
+# setup.sh - Initial server setup
+#!/bin/bash
+set -e
+
+echo "🔧 Setting up server for Cardano Dice Bot..."
+
+# Update system
+sudo apt update && sudo apt upgrade -y
+
+# Install Node.js 18
+curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+sudo apt-get install -y nodejs
+
+# Install PM2
+sudo npm install -g pm2
+
+# Install Nginx
+sudo apt install -y nginx
+
+# Install Certbot for SSL
+sudo apt install -y certbot python3-certbot-nginx
+
+# Create application directory
+mkdir -p /var/www/cardano-dice-bot
+cd /var/www/cardano-dice-bot
+
+# Clone repository
+git clone https://github.com/yourusername/cardano-dice-bot.git .
+
+# Install dependencies
+npm install
+
+# Create logs directory
+mkdir -p logs
+
+# Setup PM2
+pm2 start ecosystem.config.js
+pm2 startup
+pm2 save
+
+# Setup Nginx
+sudo cp nginx.conf /etc/nginx/sites-available/swgyub.com
+sudo ln -s /etc/nginx/sites-available/swgyub.com /etc/nginx/sites-enabled/
+sudo nginx -t
+sudo systemctl reload nginx
+
+# Get SSL certificate
+sudo certbot --nginx -d bot.swgyub.com
+
+echo "✅ Server setup complete!"
+echo "🌐 Your bot will be available at: https://bot.swgyub.com"
+
+---
+
+# ===== WEB DASHBOARD =====
+# public/index.html - Simple web dashboard for Netlify
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cardano Dice Bot - swgyub.com</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: white;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+        
+        .header {
+            text-align: center;
+            margin-bottom: 3rem;
+        }
+        
+        .header h1 {
+            font-size: 3rem;
+            margin-bottom: 1rem;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+        
+        .features {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 2rem;
+            margin-bottom: 3rem;
+        }
+        
+        .feature-card {
+            background: rgba(255,255,255,0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 2rem;
+            border: 1px solid rgba(255,255,255,0.2);
+        }
+        
+        .feature-card h3 {
+            margin-bottom: 1rem;
+            color: #ffd700;
+        }
+        
+        .cta {
+            text-align: center;
+            background: rgba(255,255,255,0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 15px;
+            padding: 3rem;
+            border: 1px solid rgba(255,255,255,0.2);
+        }
+        
+        .discord-link {
+            display: inline-block;
+            background: #5865f2;
+            color: white;
+            padding: 1rem 2rem;
+            text-decoration: none;
+            border-radius: 50px;
+            font-size: 1.2rem;
+            margin-top: 1rem;
+            transition: all 0.3s;
+        }
+        
+        .discord-link:hover {
+            background: #4752c4;
+            transform: translateY(-2px);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎲 Cardano Dice Bot</h1>
+            <p>Provably fair gaming on the Cardano blockchain</p>
+        </div>
+        
+        <div class="features">
+            <div class="feature-card">
+                <h3>🔒 Provably Fair</h3>
+                <p>Every dice roll is cryptographically verifiable using blockchain technology.</p>
+            </div>
+            
+            <div class="feature-card">
+                <h3>⚡ Instant Transactions</h3>
+                <p>Fast deposits and withdrawals powered by Cardano's efficient blockchain.</p>
+            </div>
+            
+            <div class="feature-card">
+                <h3>🎯 Simple Gaming</h3>
+                <p>Easy-to-use Discord commands for seamless gaming experience.</p>
+            </div>
+            
+            <div class="feature-card">
+                <h3>💰 ADA Rewards</h3>
+                <p>Win real Cardano ADA with our dice prediction games.</p>
+            </div>
+        </div>
+        
+        <div class="cta">
+            <h2>Ready to Play?</h2>
+            <p>Join our Discord server and start playing with real ADA!</p>
+            <a href="https://discord.gg/your-invite-code" class="discord-link">
+                Join Discord Server
+            </a>
+        </div>
+    </div>
+    
+    <script>
+        // Add some interactive elements
+        document.addEventListener('DOMContentLoaded', function() {
+            const cards = document.querySelectorAll('.feature-card');
+            cards.forEach(card => {
+                card.addEventListener('mouseenter', function() {
+                    this.style.transform = 'translateY(-5px)';
+                    this.style.transition = 'all 0.3s ease';
+                });
+                
+                card.addEventListener('mouseleave', function() {
+                    this.style.transform = 'translateY(0)';
+                });
+            });
+        });
+    </script>
+</body>
+</html>

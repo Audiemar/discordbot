@@ -1,7 +1,7 @@
 {
   "name": "cardano-dice-bot",
   "version": "1.0.0",
-  "description": "Educational Discord dice bot template",
+  "description": "Discord dice bot",
   "main": "bot.js",
   "scripts": {
     "start": "node bot.js"
